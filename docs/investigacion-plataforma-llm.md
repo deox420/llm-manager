@@ -124,7 +124,61 @@ Ventaja: valor desde la primera semana, y el desarrollo propio se concentra dond
 - **Streaming**: toda la cadena (gateway → backend → frontend) debe soportar SSE; diseñarlo desde el principio.
 - **Lock-in de frameworks de agentes**: guardar la definición de agentes como datos (prompt, modelo, tools) y no acoplada al framework de ejecución, para poder cambiar de motor.
 
-## 8. Fuentes
+## 8. Integración con Obsidian: el "segundo cerebro" de la plataforma
+
+Obsidian encaja en la arquitectura de forma natural porque su formato es Markdown plano (sin base de datos propietaria) y porque ya existe un ecosistema MCP maduro a su alrededor. La integración tiene **cuatro roles complementarios**:
+
+### 8.1 El vault como herramienta de los agentes (MCP)
+
+Los agentes de la plataforma pueden leer, buscar, crear y editar notas del vault como una herramienta MCP más — exactamente el estándar ya elegido en §4. Opciones:
+
+- **[Obsidian Local REST API](https://github.com/coddingtonbear/obsidian-local-rest-api)**: plugin que expone una API REST segura **con servidor MCP integrado en `/mcp/`**. Requiere Obsidian abierto; a cambio, Obsidian media todas las operaciones (respeta links, templates, etc.).
+- **[obsidian-mcp-server (cyanheads)](https://github.com/cyanheads/obsidian-mcp-server)** o **[mcp-obsidian](https://github.com/MarkusPfundstein/mcp-obsidian)**: servidores MCP con operaciones de lectura/escritura/búsqueda (BM25), frontmatter y tags, vía STDIO o HTTP streamable.
+- **Servidores MCP de sistema de archivos**: leen el Markdown directamente de disco, sin necesidad de que Obsidian esté abierto — la opción correcta para el lado servidor (§8.4).
+
+### 8.2 El vault como base de conocimiento (RAG)
+
+El vault se indexa en **pgvector** (la misma BD de la Fase 3) y cualquier agente puede hacer RAG sobre él: "responde usando mis notas". Pipeline: watcher/sync de archivos → chunking por nota/encabezado → embeddings → pgvector, con metadatos de frontmatter y wikilinks como señales de relevancia. Dentro de Obsidian, plugins como Smart Connections ofrecen esto en local, pero llevarlo a la plataforma lo hace accesible desde cualquier interfaz y agente.
+
+### 8.3 El vault como fuente de configuración: **agentes como notas Markdown**
+
+Esta es la pieza que resuelve "sincronizar agentes para diferentes LLMs": definir cada agente como una nota con frontmatter YAML en una carpeta `Agents/` del vault:
+
+```markdown
+---
+type: agent
+name: investigador
+model: claude-fable-5        # o cualquier modelo del gateway; cambiable por nota
+fallback_models: [gpt-5, llama-4-70b]
+tools: [obsidian-vault, web-search]
+rag_folders: [Proyectos/Investigacion]
+temperature: 0.4
+---
+Eres un investigador que responde siempre citando las notas del vault...
+```
+
+llm-manager sincroniza esa carpeta y registra/actualiza los agentes automáticamente. Como la definición es **agnóstica del modelo** (el gateway resuelve `model` contra cualquier proveedor), el mismo agente corre sobre Claude, GPT o un modelo local cambiando una línea — y versionado junto al resto del conocimiento. Los proyectos siguen el mismo patrón: una carpeta `Proyectos/X/` con frontmatter que declara qué agentes y qué contexto RAG usa.
+
+### 8.4 Sincronización vault ↔ servidor
+
+Obsidian es local y la plataforma es un servicio web, así que hace falta un mecanismo de sync:
+
+| Mecanismo | Cómo | Cuándo usarlo |
+|---|---|---|
+| **Git (plugin obsidian-git)** ⭐ | El vault es un repo; el servidor hace pull (webhook o polling) y reindexa los cambios | Recomendado: versionado, funciona con el servidor siempre encendido, multi-dispositivo |
+| **Syncthing** | Réplica continua del vault en el servidor | Sync en tiempo casi real sin ciclo commit/push |
+| **Local REST API + túnel** (Tailscale/Cloudflare) | El servidor llama al Obsidian del usuario en vivo | Acciones interactivas cuando el equipo del usuario está encendido |
+| Obsidian Sync (oficial) | Propietario, **sin API** | No sirve para integración con servidor |
+
+Diseño recomendado: **git como canal principal** (el servidor mantiene una réplica del vault, la indexa y escribe en ella los resultados de los agentes — resúmenes, notas de proyecto, logs de conversaciones — que vuelven al usuario en el siguiente pull), con Local REST API opcional para operaciones en vivo. La escritura de los agentes hacia el vault sigue el patrón "LLM Wiki" de Karpathy (compilar conocimiento en notas interconectadas y mantenerlas al día), popularizado por proyectos como [claude-obsidian](https://github.com/AgriciDaniel/claude-obsidian) y [obsidian-second-brain](https://github.com/eugeniughelbur/obsidian-second-brain).
+
+### 8.5 Impacto en el plan de fases
+
+- **Fase 2** añade: réplica git del vault + indexado RAG en pgvector + servidor MCP de vault (filesystem) registrado en la plataforma.
+- **Fase 3** añade: sync bidireccional de `Agents/` y `Proyectos/` (notas → agentes registrados) y write-back de resultados al vault.
+- Modelo de datos: se añaden tablas `vaults` (repo, credenciales, estado de sync) y `vault_documents` (ruta, hash, frontmatter, chunks→pgvector); `agents` gana una columna `source` (`db` | `vault`) para distinguir agentes creados en la UI de los definidos en notas.
+
+## 9. Fuentes
 
 - [5 Best Open-Source LLM Gateways for Self-Hosted Deployments in 2026 — Maxim AI](https://www.getmaxim.ai/articles/5-best-open-source-llm-gateways-for-self-hosted-deployments-in-2026/)
 - [LiteLLM — GitHub](https://github.com/BerriAI/litellm) · [Docs](https://docs.litellm.ai/docs/)
@@ -138,3 +192,11 @@ Ventaja: valor desde la primera semana, y el desarrollo propio se concentra dond
 - [The 2026 Definitive Guide to Running Local LLMs in Production — SitePoint](https://www.sitepoint.com/the-2026-definitive-guide-to-running-local-llms-in-production/)
 - [LLM Orchestration in 2026: Top 22 frameworks and gateways — AIMultiple](https://aimultiple.com/llm-orchestration)
 - [Awesome-LLMOps — GitHub](https://github.com/tensorchord/Awesome-LLMOps)
+- [Obsidian Local REST API (con servidor MCP integrado) — GitHub](https://github.com/coddingtonbear/obsidian-local-rest-api)
+- [obsidian-mcp-server (cyanheads) — GitHub](https://github.com/cyanheads/obsidian-mcp-server)
+- [mcp-obsidian (MarkusPfundstein) — GitHub](https://github.com/MarkusPfundstein/mcp-obsidian)
+- [Obsidian MCP Setup 2026: Local REST API Complete Guide — MCP.Directory](https://mcp.directory/blog/obsidian-mcp-complete-guide-2026)
+- [Obsidian AI Second Brain: Complete Guide (2026) — NxCode](https://www.nxcode.io/resources/news/obsidian-ai-second-brain-complete-guide-2026)
+- [claude-obsidian: self-organizing AI second brain — GitHub](https://github.com/AgriciDaniel/claude-obsidian)
+- [obsidian-second-brain: cross-CLI vault skill — GitHub](https://github.com/eugeniughelbur/obsidian-second-brain)
+- [Build a Local AI Second Brain With Obsidian & Ollama — Vucense](https://vucense.com/ai-intelligence/local-llms/how-to-build-a-second-brain-powered-by-local-ai/)
